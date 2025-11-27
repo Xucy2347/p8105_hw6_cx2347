@@ -1,0 +1,159 @@
+---
+title: "p8105_hw6_cx2347"
+author: "Chuyuan XU"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(broom)
+library(patchwork)
+library(rvest)
+library(httr)
+
+knitr::opts_chunk$set(
+  fig.width = 8,
+  fig.asp = 0.9,
+  out.width = "90%"
+)
+```
+
+### Problem 1
+```{r p1 import, message=FALSE}
+csv = "https://raw.githubusercontent.com/washingtonpost/data-homicides/refs/heads/master/homicide-data.csv"
+
+homicide_raw = read_csv(csv, na=c("NA", "", "."))
+```
+
+```{r p1 tidy}
+homicide_df = homicide_raw |>
+  janitor::clean_names() |>
+  
+  # Create a city_state variable (e.g. “Baltimore, MD”)
+  mutate(city_state = str_c(city, ', ', state)) |>
+  
+  # omit Dallas, TX; Phoenix, AZ; Kansas City, MO; Tulsa, AL
+  filter(
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")
+  ) |>
+  
+  # limit the data among those for whom victim_race is white or black
+  filter(
+    victim_race %in% c("White", "Black")
+  ) |>
+  
+  # change the victims' age into numbers
+  # change the unknown victims' sex into NA
+  # change the victim_race into a factor
+  # create a indicator for resolved vs unresolved
+  mutate(
+    victim_age = if_else(victim_age == "Unknown", NA , victim_age),
+    victim_age = as.numeric(victim_age),
+    victim_sex =  if_else(victim_sex == "Unknown", NA , victim_sex),
+    victim_race = fct_relevel(victim_race, "White"),
+    resolved = as.numeric(disposition == "Closed by arrest")
+  )
+```
+
+```{r, p1 glm_Balt}
+# fit a logistic regression with resolved vs unresolved as the outcome and victim age, sex and race as predictors
+fit_balt = homicide_df |>
+  filter(city == "Baltimore") |>
+  glm(
+    resolved ~ victim_age + victim_race + victim_sex, 
+    data = _,
+    family = binomial()
+  )
+
+fit_balt_df = fit_balt |> 
+  broom::tidy() |> 
+  mutate(
+    OR = exp(estimate),
+    conf.low = exp(estimate - 1.96*std.error),
+    conf.high = exp(estimate + 1.96*std.error),
+  ) |>
+  select(term, OR, conf.low, conf.high, p.value) 
+
+fit_balt_df |> 
+  mutate(
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3)
+  ) |>
+  nest(CI = c("conf.low", "conf.high")) |>
+  select(term, OR, CI, p.value) |>
+  knitr::kable(
+    digits = 3,
+    col.names = c("terms", "est OR", "95% CI (OR)", "P-value"),
+    align = 'r'
+  )
+```
+
+The estimated adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed is `r round(pull(filter(fit_balt_df, term == "victim_sexMale"), OR),3)`, with a 95% confidence interval of (`r round(pull(filter(fit_balt_df, term == "victim_sexMale"), conf.low), 3)`, `r round(pull(filter(fit_balt_df, term == "victim_sexMale"), conf.high),3)`).
+
+```{r p1 glm_all cities}
+glm_cities_df = homicide_df |>
+  nest(data = -city_state) |>
+  mutate(
+    models = map(data, \(df) glm(resolved ~ victim_age + victim_race + victim_sex, data = df)),
+    results = map(models, broom::tidy)
+  ) |>
+  select(-data, -models) |> 
+  unnest(results) |>
+  
+  # keep the results for only adj OR males over females
+  filter(term == "victim_sexMale") |>
+  
+  mutate(
+    OR = exp(estimate),
+    conf.low = exp(estimate - 1.96*std.error),
+    conf.high = exp(estimate + 1.96*std.error)
+  ) |> 
+  select(city_state, OR, conf.low, conf.high, p.value) |>
+  
+  # Organize cities according to estimated OR
+  mutate(
+    city_state = fct_reorder(city_state, OR)
+  ) |>
+  arrange(city_state)
+```
+
+```{r p1 plot}
+# Create a plot that shows the estimated ORs and CIs for each city.
+glm_cities_df |>
+  mutate(
+    fill = (OR > 1)
+  ) |>
+  ggplot(aes(y = city_state, x = OR, color = fill)) +
+  geom_point() +
+  geom_errorbar(
+    aes(xmin = conf.low, xmax = conf.high),
+    width = 0.2,
+    alpha = 0.8
+  ) +
+  geom_vline(
+    xintercept = 1.0,
+    color = "grey",
+    alpha = 0.8
+  ) +
+  theme_minimal() +
+  labs(
+    y = 'City, State',
+    x = 'the Estimated OR with 95% CI',
+    color = 'OR is greater than 1.0',
+    title = 'the Adjusted Odds Ratio (and 95% CI) for Solving Homicides',
+    subtitle = 'Comparing Male Victims to Female Victims'
+  )
+  
+```
+
+#### Comments:
+6 of 47 cities in the study have an OR greater than 1, for solving homicides comparing male and female victims. In most cities, the odds for solving homicides with a male victims is lower than that for solving homicides with a female victims, adjusting for their age and race (white or black). However, many 95% CI of the adjusted OR include the null value of 1, we cannot conclude those associations are significant.
+
+
+### Problem 2
+```{r}
+
+```
+
