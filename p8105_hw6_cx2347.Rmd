@@ -12,6 +12,7 @@ library(broom)
 library(patchwork)
 library(rvest)
 library(httr)
+library(p8105.datasets)
 
 knitr::opts_chunk$set(
   fig.width = 8,
@@ -133,7 +134,7 @@ glm_cities_df |>
     alpha = 0.8
   ) +
   geom_vline(
-    xintercept = 1.0,
+    aes(xintercept = 1.0), 
     color = "grey",
     alpha = 0.8
   ) +
@@ -145,7 +146,6 @@ glm_cities_df |>
     title = 'the Adjusted Odds Ratio (and 95% CI) for Solving Homicides',
     subtitle = 'Comparing Male Victims to Female Victims'
   )
-  
 ```
 
 #### Comments:
@@ -153,7 +153,153 @@ glm_cities_df |>
 
 
 ### Problem 2
-```{r}
+```{r p2 import}
+data("weather_df")
+```
+
+```{r p3 bootstrap}
+set.seed(1234)
+
+weather_bs = weather_df |>
+  modelr::bootstrap(n = 5000) |>
+  mutate(
+    models = map(strap, \(df) lm(tmax ~ tmin + prcp, data = df))
+  )
+
+# get the r_sqr
+weather_rsq = weather_bs |>
+  mutate(
+    results = map(models, broom::glance)
+  ) |>
+  unnest(results) |>
+  mutate(
+    id = as.numeric(.id)
+  ) |>
+  select(id = id, r.squared)
+
+# get the beta_1/beta_2
+weather_betas = weather_bs |>
+  mutate(
+    results = map(models, broom::tidy)
+  ) |>
+  select(.id, results) |>
+  unnest(results) |>
+  select(.id, term, estimate) |>
+  pivot_wider(
+    names_from = "term",
+    values_from = "estimate",
+    id_cols = .id
+  ) |>
+  mutate(
+    beta.frac = tmin/prcp,
+    id = as.numeric(.id)
+  ) |>
+  select(id, beta.frac)
+
+# merge the result into one
+weather_bs_rslt = full_join(weather_rsq, weather_betas, by = "id")
+```
+
+```{r p2 dist plot}
+rsqr.dist = weather_bs_rslt |>
+  ggplot(aes(x = r.squared)) +
+  geom_density(fill = 'grey', alpha = 0.4) +
+  geom_vline(aes(xintercept = mean(r.squared)), color = 'red', linetype = "dashed", alpha = 0.5) +
+  geom_vline(aes(xintercept = median(r.squared)), color = 'blue', linetype = "solid", alpha = 0.8) +
+  labs(
+    x = "R sqaured"
+  ) +
+  theme_minimal()
+
+beta.frac_dist = weather_bs_rslt |>
+  ggplot(aes(x = beta.frac)) +
+  geom_density(fill = 'grey', alpha = 0.4) +
+  geom_vline(aes(xintercept = mean(beta.frac)), color = 'red', linetype = "dashed", alpha = 0.5) +
+  geom_vline(aes(xintercept = median(beta.frac)), color = 'blue', linetype = "solid", alpha = 0.8) +
+  labs(
+    x = "Beta_tmin/Beta_prcp",
+    y = ""
+  ) +
+  theme_minimal()
+
+rsqr.dist + beta.frac_dist +
+  plot_annotation(
+    title = 'the Distribution of the Estimates',
+    caption = 'the red dashed line is the mean and the blue solid line is the median')
+```
+
+The above figure displays the distribution of Estimated Beta_tmin/Beta_prcp and R-squared, where the red dashed line is the mean and the blue solid line is the median. The r-squared is approximately symmetrically distributed with a range of 0.930 and 0.955. The Beta_tmin/Beta_prcp r-squared has a left-skewed distribution, with a range between -450 and -100.
+
+```{r p2 quantiles}
+q = weather_bs_rslt |>
+  pivot_longer(
+    cols = r.squared:beta.frac,
+    values_to = "estimate",
+    names_to = "terms"
+  ) |>
+  group_by(terms) |>
+  summarize(
+    ci_lower = quantile(estimate, 0.025), 
+    ci_upper = quantile(estimate, 0.975)
+  ) |>
+  mutate(
+    terms = case_match(
+      terms,
+      "beta.frac" ~ "est(Beta_tmin/Beta_prcp)",
+      "r.squared" ~ "R-squared"
+      )
+    )
+
+q |>
+  knitr::kable(
+    digits = 3,
+    col.names = c("Estimates", "2.5% quantiles", "97.5% quantiles"),
+    caption = "the 95% Confidence Intervals for Estimates"
+  )
+```
+
+The above table shows the 95% Confidence Intervals for the Estimated Beta_tmin/Beta_prcp and R-squared.
+
+### Problem 3
+```{r p3 import}
+wt_raw = read_csv("data/birthweight.csv", na = c("NA", ".", ""))
+```
+
+```{r p3 tidy}
+wt_df = wt_raw |>
+  janitor::clean_names() |>
+  mutate(
+    babysex = case_match(
+      babysex,
+      1 ~ "male",
+      2 ~ "female"
+    ),
+    malform = case_match(
+      0 = "absent", 
+      1 = "present"
+    ),
+    
+    frace = case_match(
+      frace,
+      1 ~ "White", 
+      2 ~ "Black", 
+      3 ~ "Asian", 
+      4 ~ "Puerto Rican", 
+      8 ~ "Other", 
+      9 ~ NA
+    ),
+    
+    mrace = as.factor(
+      frace,
+      1 ~ "White", 
+      2 ~ "Black", 
+      3 ~ "Asian", 
+      4 ~ "Puerto Rican", 
+      8 ~ "Other", 
+      9 ~ NA
+    )
+  )
 
 ```
+
 
