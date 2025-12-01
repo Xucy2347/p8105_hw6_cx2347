@@ -10,8 +10,8 @@ library(tidyverse)
 library(stringr)
 library(broom)
 library(patchwork)
-library(rvest)
-library(httr)
+library(glmnet)
+library(modelr)
 library(p8105.datasets)
 
 knitr::opts_chunk$set(
@@ -158,8 +158,6 @@ data("weather_df")
 ```
 
 ```{r p3 bootstrap}
-set.seed(1234)
-
 weather_bs = weather_df |>
   modelr::bootstrap(n = 5000) |>
   mutate(
@@ -262,44 +260,195 @@ The above table shows the 95% Confidence Intervals for the Estimated Beta_tmin/B
 
 ### Problem 3
 ```{r p3 import}
-wt_raw = read_csv("data/birthweight.csv", na = c("NA", ".", ""))
+bwt_raw = read_csv("data/birthweight.csv", na = c("NA", ".", ""))
 ```
 
 ```{r p3 tidy}
-wt_df = wt_raw |>
-  janitor::clean_names() |>
-  mutate(
-    babysex = case_match(
-      babysex,
-      1 ~ "male",
-      2 ~ "female"
-    ),
-    malform = case_match(
-      0 = "absent", 
-      1 = "present"
-    ),
+bwt_df = bwt_raw |>
+    mutate(
+      babysex = 
+          case_match(babysex,
+              1 ~ "male",
+              2 ~ "female"
+          ),
+      
+      babysex = fct_infreq(babysex),
+      
+      frace = 
+          case_match(frace,
+              1 ~ "white",
+              2 ~ "black", 
+              3 ~ "asian", 
+              4 ~ "puerto rican", 
+              8 ~ "other"),
+      frace = fct_infreq(frace),
     
-    frace = case_match(
-      frace,
-      1 ~ "White", 
-      2 ~ "Black", 
-      3 ~ "Asian", 
-      4 ~ "Puerto Rican", 
-      8 ~ "Other", 
-      9 ~ NA
-    ),
-    
-    mrace = as.factor(
-      frace,
-      1 ~ "White", 
-      2 ~ "Black", 
-      3 ~ "Asian", 
-      4 ~ "Puerto Rican", 
-      8 ~ "Other", 
-      9 ~ NA
+      mrace = 
+          case_match(mrace,
+              1 ~ "white",
+              2 ~ "black", 
+              3 ~ "asian", 
+              4 ~ "puerto rican",
+              8 ~ "other"),
+      mrace = fct_infreq(mrace),
+      
+      malform = as.logical(malform)
+    ) 
+
+bwt_na = bwt_df |>
+  filter(if_any(everything(), is.na)) |>
+  summarise(
+    across(
+      everything(),
+      ~ sum(is.na(.))
     )
+  ) |>
+  pivot_longer(
+    cols = c("babysex":"wtgain"),
+    values_to = "na_counts",
+    names_to = "var_names"
+  )
+```
+
+There are `r nrow(bwt_df)` observations in the weightbirth raw dataset (`bwt_raw`) with `r ncol(bwt_df)` variables.\
+Categorical variables, including baby’s sex (`babysex`), the presence of malformations that could affect weight (`malform`), father's and mother's race (`frace` and `mrace`) were converted from numeric to factor prior to the analysis. Father's and mother's race as "unknown" (category 9) will be treated as NA in the later analysis.\
+After tidying the data, there are `r sum(bwt_na$na_counts)` observations with missing values.
+
+```{r p3_lasso model selection}
+# select model with Lasso
+x = model.matrix(bwt ~ ., bwt_df)[,-1]
+y = bwt_df |> pull(bwt)
+lambda = 10^(seq(-2, 2.75, 0.1))
+
+lasso_fit =
+  glmnet(x, y, lambda = lambda)
+
+lasso_cv =
+  cv.glmnet(x, y, lambda = lambda)
+
+lambda_opt = lasso_cv[["lambda.min"]]
+
+lasso_fit_opt =  
+  glmnet(x, y, lambda = lambda_opt) |> 
+  broom::tidy()
+```
+
+A Lasso Regression model is performed to select the most parsimonious model with the smallest tuning parameter lambda. The optimized model has a lambda value of `r round(lambda_opt, 3)` and kept `r pull(lasso_fit_opt, term)[2:nrow(lasso_fit_opt)]` in the linear regression model. However, in the lasso, dummy variables for mrace and frace are separated. In the proposed model, all the frace and mrace categories are dropped.
+
+```{r p3_refit}
+# in the lasso, categorical variables for mrace and frace are separated.
+# reintroduce all the frace and mrace categories.
+fit_new = 
+  lm(
+    bwt ~ 
+      bhead + blength + delwt + fincome + gaweeks + menarche + 
+      mheight + momage + parity + smoken + wtgain, 
+    data = bwt_df)
+
+fit_new |>
+  broom::tidy() |>
+  knitr::kable(
+    digits = 3,
+    caption = "Summary of the new fitted Linear Regression Model Estimating Baby Birthweight"
+  )
+
+fit_new |>
+  broom::glance() |>
+  select(r.squared, statistic, p.value) |>
+  knitr::kable(
+    digits = 3,
+    caption = "Performance Summary"
+  )
+```
+
+The above table displays the estimate coefficient of the predictors in the linear regression model estimating baby birth weights. All of the estimates shows either significant or approximately significant association with the baby birthweight. The overall model is significant with a p-value < 0.05, and 70.5% variance in the birthweight can be explained by the model.
+
+```{r p3_residuals vs. fitted values}
+# plot of model residuals against fitted values
+bwt_df |>
+  modelr::add_residuals(fit_new) |>
+  modelr::add_predictions(fit_new) |>
+  
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point() +
+  geom_smooth(method = "lm") + 
+  theme_minimal() +
+  labs(
+    x = "Fitted Values",
+    y = "Model Residuals",
+    title = "Model Residuals against Fitted Values"
   )
 
 ```
 
+```{r p3_model comparison, Warning = FALSE}
+train_df = 
+  crossv_mc(bwt_df, 100) |>
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
 
+cv_df = train_df|>
+  mutate(
+    # model 1 using length at birth and gestational age as predictors (main effects only)
+    main_mod = 
+      map(train, 
+          \(df) 
+          lm(
+            bwt ~ 
+              blength + gaweeks, 
+            data = df)
+          ),
+    
+    # model 2 using head circumference, length, sex, and all interactions (including the three-way interaction) between these
+    inter_mod  = 
+      map(train, 
+          \(df) 
+          lm(
+            bwt ~ 
+              bhead + blength + babysex + 
+              bhead * blength + babysex * bhead + blength * babysex + 
+              bhead * blength * babysex,
+            data = df)
+          ),
+    
+    # model 3: model proposed above
+    my_mod  = 
+      map(train, 
+          \(df) 
+            lm(
+              bwt ~ 
+                bhead + blength + delwt + fincome + gaweeks + menarche + 
+                mheight + momage + parity + smoken + wtgain, 
+              data = df)
+            )
+    ) |> 
+  
+  mutate(
+    rmse_main = map2_dbl(main_mod, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_inter = map2_dbl(inter_mod, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_my = map2_dbl(my_mod, test, \(mod, df) rmse(model = mod, data = df))
+    )
+```
+
+```{r p3_plot rmse}
+# plot the prediction error distribution for each candidate model
+cv_df |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") |> 
+  mutate(model = fct_inorder(model)) |>
+  
+  ggplot(aes(x = model, y = rmse, fill = model)) + 
+  geom_violin(alpha = 0.5) +
+  theme_minimal() +
+  labs(
+    fill = "Model"
+  )
+```
+
+Across all three models, the model from Lasso selection has the lowest rmse and is, therefore, more preferred.
