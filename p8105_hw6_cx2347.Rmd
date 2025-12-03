@@ -69,13 +69,9 @@ fit_balt = homicide_df |>
   )
 
 fit_balt_df = fit_balt |> 
-  broom::tidy() |> 
-  mutate(
-    OR = exp(estimate),
-    conf.low = exp(estimate - 1.96*std.error),
-    conf.high = exp(estimate + 1.96*std.error),
-  ) |>
-  select(term, OR, conf.low, conf.high, p.value) 
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  rename(OR = estimate) |>
+  select(-std.error) 
 
 fit_balt_df |> 
   mutate(
@@ -97,8 +93,8 @@ The estimated adjusted odds ratio for solving homicides comparing male victims t
 glm_cities_df = homicide_df |>
   nest(data = -city_state) |>
   mutate(
-    models = map(data, \(df) glm(resolved ~ victim_age + victim_race + victim_sex, data = df)),
-    results = map(models, broom::tidy)
+    models = map(data, \(df) glm(resolved ~ victim_age + victim_race + victim_sex, family = binomial(), data = df)),
+    results = map(models, \(mod) broom::tidy(mod, conf.int = TRUE, exponentiate = TRUE))
   ) |>
   select(-data, -models) |> 
   unnest(results) |>
@@ -106,12 +102,7 @@ glm_cities_df = homicide_df |>
   # keep the results for only adj OR males over females
   filter(term == "victim_sexMale") |>
   
-  mutate(
-    OR = exp(estimate),
-    conf.low = exp(estimate - 1.96*std.error),
-    conf.high = exp(estimate + 1.96*std.error)
-  ) |> 
-  select(city_state, OR, conf.low, conf.high, p.value) |>
+  select(city_state, OR = estimate, conf.low, conf.high, p.value) |>
   
   # Organize cities according to estimated OR
   mutate(
@@ -370,8 +361,9 @@ bwt_df |>
   modelr::add_predictions(fit_new) |>
   
   ggplot(aes(x = pred, y = resid)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed") +
   geom_point() +
-  geom_smooth(method = "lm") + 
+  geom_smooth(method = "lm", alpha = 0.5) + 
   theme_minimal() +
   labs(
     x = "Fitted Values",
